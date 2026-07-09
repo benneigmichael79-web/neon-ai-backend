@@ -18,32 +18,44 @@ export default async function handler(req, res) {
 
   const textPrompt = (typeof prompt === 'string' && prompt.trim()) || 'Describe this image in detail.';
 
+  const models = ['google/gemma-4-31b-it:free', 'google/gemma-4-26b-a4b-it:free'];
+
   try {
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://neon-ai-backend.vercel.app',
-        'X-OpenRouter-Title': 'Neon Prompt Studio'
-      },
-      body: JSON.stringify({
-        model: 'google/gemma-4-31b-it:free',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: textPrompt },
-              { type: 'image_url', image_url: { url: image } }
-            ]
-          }
-        ]
-      })
-    });
+    let response, lastError;
+
+    for (const model of models) {
+      response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://neon-ai-backend.vercel.app',
+          'X-OpenRouter-Title': 'Neon Prompt Studio'
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: textPrompt },
+                { type: 'image_url', image_url: { url: image } }
+              ]
+            }
+          ]
+        })
+      });
+
+      if (response.ok) break;
+
+      lastError = await response.text();
+      if (response.status !== 429) {
+        return res.status(response.status).json({ error: lastError });
+      }
+    }
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: errText });
+      return res.status(429).json({ error: lastError });
     }
 
     const data = await response.json();
