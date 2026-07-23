@@ -1,68 +1,58 @@
+export const config = { maxDuration: 60 };
+
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Only POST requests are allowed' });
-  }
-
-  const { prompt, image } = req.body || {};
-  if (!image || typeof image !== 'string') {
-    return res.status(400).json({ error: 'Missing "image" in request body (base64 data URL)' });
-  }
-
-  const textPrompt = (typeof prompt === 'string' && prompt.trim()) || 'Describe this image in detail.';
-
-  const models = ['google/gemma-4-31b-it:free', 'google/gemma-4-26b-a4b-it:free'];
+  const { prompt } = req.body || {};
+  if (!prompt || typeof prompt !== "string") return res.status(400).json({ error: "Missing required field: prompt" });
 
   try {
-    let response, lastError;
+    const upstream = await fetch("https://chronos-creative-ai.lovable.app/api/generate-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!upstream.ok || !upstream.body) {
+      const t = await upstream.text().catch(() => "");
+      return res.status(502).json({ error: `Upstream error: ${upstream.status} ${t}` });
+    }
 
-    for (const model of models) {
-      response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://neon-ai-backend.vercel.app',
-          'X-OpenRouter-Title': 'Neon Prompt Studio'
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: textPrompt },
-                { type: 'image_url', image_url: { url: image } }
-              ]
-            }
-          ]
-        })
-      });
-
-      if (response.ok) break;
-
-      lastError = await response.text();
-      if (response.status !== 429) {
-        return res.status(response.status).json({ error: lastError });
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "", finalB64 = null, streamError = null;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const rawEvent = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        let eventType = "message", dataLines = [];
+        rawEvent.split("\n").forEach(line => {
+          if (line.startsWith("event:")) eventType = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+        });
+        const dataStr = dataLines.join("\n");
+        if (!dataStr) continue;
+        let payload;
+        try { payload = JSON.parse(dataStr); } catch { continue; }
+        if (eventType === "error" || payload?.type === "error") { streamError = payload?.error?.message || "Image generation failed"; continue; }
+        if (payload?.type === "image_generation.completed" && payload.b64_json) finalB64 = payload.b64_json;
       }
+      if (finalB64) break;
     }
+    try { reader.cancel(); } catch {}
 
-    if (!response.ok) {
-      return res.status(429).json({ error: lastError });
-    }
-
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content || '';
-    return res.status(200).json({ text });
-
+    if (!finalB64) return res.status(502).json({ error: streamError || "Image stream ended without a completed image" });
+    const dataUri = `data:image/png;base64,${finalB64}`;
+    return res.status(200).json({ image: dataUri, url: dataUri, imageUrl: dataUri, success: true });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: "Image generation failed: " + (err?.message || "unknown error") });
   }
 }
+  
