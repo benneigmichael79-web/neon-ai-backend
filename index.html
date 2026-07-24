@@ -1426,7 +1426,76 @@ renderTemplates();
 
 loadVoiceTab();
 
-/* ============ PROMPT DNA VIEWER (additive — does not touch other pipelines) ============ */
+  /* ============ IMAGE GENERATION INJECTOR (additive — scans rendered cards, touches no existing function) ============ */
+(function(){
+  const CONTAINERS = ['forge-final','oracle-final','tattoo-final','studio-final','flash-results','batch-results','mood-results','tattoo-mood-results','dna-final'];
+  let imgBtnCounter = 0;
+
+  function extractPromptText(cardEl){
+    const el = cardEl.querySelector('.final-prompt, .concept-prompt');
+    if(!el) return '';
+    return el.innerText || el.textContent || '';
+  }
+
+  function injectImageControls(cardEl){
+    if(cardEl.dataset.imgInjected) return;
+    const promptText = extractPromptText(cardEl);
+    if(!promptText.trim()) return;
+    cardEl.dataset.imgInjected = '1';
+    const id = 'geimg-' + (imgBtnCounter++);
+    const row = document.createElement('div');
+    row.className = 'action-row';
+    row.style.marginTop = '10px';
+    row.innerHTML = `<button type="button" class="btn btn-outline btn-sm" id="${id}-btn">🖼 IMAGE</button>`;
+    const wrap = document.createElement('div');
+    wrap.id = id + '-imgwrap';
+    cardEl.appendChild(row);
+    cardEl.appendChild(wrap);
+    row.querySelector('button').addEventListener('click', () => generateInjectedImage(id, promptText));
+  }
+
+  async function generateInjectedImage(id, promptText){
+    const btn = document.getElementById(id+'-btn');
+    const wrap = document.getElementById(id+'-imgwrap');
+    if(!btn || !wrap) return;
+    btn.disabled = true; btn.innerText = '⏳ GENERATING...';
+    wrap.innerHTML = '';
+    try{
+      const resp = await fetch('/api/image', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ prompt: promptText })
+      });
+      const data = await resp.json();
+      if(!resp.ok || !data || !(data.image || data.url || data.imageUrl)){
+        throw new Error((data && data.error) || 'image gen failed');
+      }
+      const src = data.image || data.url || data.imageUrl;
+      const ac = (typeof activeColor !== 'undefined') ? activeColor : '#9B89C4';
+      wrap.innerHTML = `<img src="${src}" style="width:100%;border-radius:6px;margin-top:8px;border:2px solid ${ac}66" alt="generated image" />`;
+      btn.innerText = '🖼 REGENERATE';
+      btn.disabled = false;
+    }catch(err){
+      wrap.innerHTML = `<div class="error-box" style="margin-top:8px">⚠ image gen failed — tap IMAGE to retry</div>`;
+      btn.innerText = '🖼 IMAGE';
+      btn.disabled = false;
+    }
+  }
+
+  function scanContainer(el){
+    el.querySelectorAll('.final-box, .concept-card').forEach(injectImageControls);
+  }
+
+  CONTAINERS.forEach(id=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    scanContainer(el);
+    const mo = new MutationObserver(()=>scanContainer(el));
+    mo.observe(el, {childList:true, subtree:true});
+  });
+})();
+
+  /* ============ PROMPT DNA VIEWER (additive — does not touch other pipelines) ============ */
 const DNA_FIELDS = ["SUBJECT","STYLE","LIGHTING","CAMERA","COMPOSITION","COLOR","TEXTURE","RENDER","NEGATIVE PROMPT"];
 const DNA_ALIASES = {
   SUBJECT: ["subject","concept","idea"],
